@@ -24,7 +24,7 @@ export default async function handler(req, res) {
 
     // Naomi system prompt - GUARDRAILED
     const systemPrompt = `
-You are Naomi, AI assistant for AB Logistics, built by Netcom Media Solutions.
+You are Naomi, AI assistant for AB Logistivacs, built by Netcom Media Solutions.
 
 STRICT RULES:
 1. You ONLY answer questions about AB Logistics services: haulage, clearing & forwarding, warehousing, logistics support.
@@ -63,7 +63,7 @@ Be helpful and warm. You are Naomi.
     });
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2®1.5-flash:generateContent?key=${GEMINI_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
