@@ -34,15 +34,15 @@ const FALLBACK_REPLY =
 const MODELS = [
   {
     name: 'gemini-3.1-flash-lite',
-    generationConfig: { maxOutputTokens: 1024 },
+    generationConfig: { maxOutputTokens: 512 },
   },
   {
     name: 'gemini-3.8-flash',
-    generationConfig: { maxOutputTokens: 1024, thinkingConfig: { thinkingLevel: 'low' } },
+    generationConfig: { maxOutputTokens: 512, thinkingConfig: { thinkingLevel: 'low' } },
   },
   {
     name: 'gemini-2.5-flash',
-    generationConfig: { maxOutputTokens: 1024, thinkingConfig: { thinkingBudget: 0 } },
+    generationConfig: { maxOutputTokens: 512, thinkingConfig: { thinkingBudget: 0 } },
   },
 ];
 
@@ -120,6 +120,9 @@ function extractReply(data) {
     .trim();
 }
 
+// Allow up to 30s per request on Vercel (default can be as low as 10s)
+export const config = { maxDuration: 30 };
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -149,17 +152,17 @@ export default async function handler(req, res) {
     const contents = buildContents(history, message);
     const attempts = [];
     const startedAt = Date.now();
-    const BUDGET_MS = 9000; // stay under Vercel's 10s function limit
+    const BUDGET_MS = 25000; // total time allowed for all attempts
 
     for (const model of MODELS) {
       const remaining = BUDGET_MS - (Date.now() - startedAt);
-      if (remaining < 1500) {
+      if (remaining < 3000) {
         attempts.push(`${model.name}: skipped (out of time)`);
         break;
       }
       let result;
       try {
-        result = await callGemini(model, contents, GEMINI_API_KEY, Math.min(6000, remaining));
+        result = await callGemini(model, contents, GEMINI_API_KEY, Math.min(14000, remaining));
       } catch (e) {
         const why = e.name === 'AbortError' ? 'timed out' : `network error - ${e.message}`;
         attempts.push(`${model.name}: ${why}`);
