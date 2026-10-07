@@ -21,12 +21,19 @@ body{background:#f8f9ff;color:#222;}
 #chat-header{background:linear-gradient(135deg,#6a11cb,#2575fc);color:white;padding:15px;display:flex;align-items:center;gap:10px;}
 #chat-header img{width:40px;height:40px;border-radius:50%;}
 #chat-messages{flex:1;padding:15px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;background:#f8f9ff;}
-.msg{padding:10px 14px;border-radius:18px;max-width:80%;font-size:14px;line-height:1.4;}
+.msg{padding:10px 14px;border-radius:18px;max-width:80%;font-size:14px;line-height:1.4;word-wrap:break-word;}
 .user{align-self:flex-end;background:#2575fc;color:white;}
 .bot{align-self:flex-start;background:white;border:1px solid #eee;}
 #chat-input-area{display:flex;padding:10px;border-top:1px solid #eee;gap:8px;}
 #chat-input{flex:1;padding:12px 15px;border-radius:25px;border:1px solid #ddd;outline:none;}
 #send-btn{background:#2575fc;color:white;border:none;padding:0 20px;border-radius:25px;cursor:pointer;font-weight:bold;}
+#send-btn:disabled{opacity:0.6;cursor:not-allowed;}
+
+/* WHATSAPP BUTTONS */
+.wa-btn{display:inline-block;background:#25D366;color:#fff !important;padding:6px 14px;border-radius:20px;font-weight:600;text-decoration:none;margin:4px 0;}
+.wa-btn:hover{background:#1ebe5d;}
+#wa-continue{display:block;text-align:center;background:#25D366;color:#fff;text-decoration:none;font-weight:600;font-size:13px;padding:9px;}
+#wa-continue:hover{background:#1ebe5d;}
 </style>
 </head>
 <body>
@@ -34,7 +41,7 @@ body{background:#f8f9ff;color:#222;}
 <div class="hero">
 <h1>AI Chatbot for Your Business</h1>
 <p>Meet Naomi — Netcom Media's AI Assistant. She answers customers 24/7, captures leads, and connects to WhatsApp automatically.</p>
-<a href="#" onclick="toggleChat()" class="btn">Try Naomi Live Demo →</a>
+<a href="#" onclick="toggleChat();return false;" class="btn">Try Naomi Live Demo →</a>
 </div>
 
 <div class="features">
@@ -53,32 +60,97 @@ body{background:#f8f9ff;color:#222;}
 <div id="chat-messages">
 <div class="msg bot">Hi! I'm Naomi from Netcom Media 👋 How can I help you with your website or marketing today?</div>
 </div>
+<a id="wa-continue" href="#" target="_blank" rel="noopener">💬 Continue on WhatsApp</a>
 <div id="chat-input-area">
-<input id="chat-input" placeholder="Type a message..." onkeypress="if(event.key==='Enter')sendMsg()">
+<input id="chat-input" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendMsg()">
 <button id="send-btn" onclick="sendMsg()">Send</button>
 </div>
 </div>
 
 <script>
+const WA_NUMBER = '2348037195305';
+const WA_LINK = 'https://wa.me/' + WA_NUMBER + '?text=' + encodeURIComponent('Hello AB Logistics, I would like to make an enquiry.');
+const FALLBACK_REPLY = "I'm not sure, please chat with us on WhatsApp: " + WA_NUMBER;
+const NETWORK_ERROR = 'Network error. Please chat with us on WhatsApp: ' + WA_NUMBER;
+
 const chatWindow = document.getElementById('chat-window');
 const messagesDiv = document.getElementById('chat-messages');
 const input = document.getElementById('chat-input');
+const sendBtn = document.getElementById('send-btn');
+const chatHistory = [];   // remembers the conversation so Naomi doesn't repeat herself
+let sending = false;
+
+document.getElementById('wa-continue').href = WA_LINK;
+
 function toggleChat(){ chatWindow.style.display = chatWindow.style.display==='flex' ? 'none' : 'flex'; }
+
+function escapeHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Safe formatting for Naomi's replies: bold text, line breaks, green WhatsApp button
+function formatBotText(text){
+  let html = escapeHtml(text);
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(?:\+?234|0)[\s-]?803[\s-]?719[\s-]?5305/g,
+    '<a class="wa-btn" href="' + WA_LINK + '" target="_blank" rel="noopener">💬 Chat on WhatsApp</a>');
+  return html.replace(/\n/g, '<br>');
+}
+
+function addMsg(kind, text, isBotHtml){
+  const div = document.createElement('div');
+  div.className = 'msg ' + kind;
+  if (isBotHtml) div.innerHTML = formatBotText(text);
+  else div.textContent = text;
+  messagesDiv.appendChild(div);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  return div;
+}
+
 async function sendMsg(){
+  if (sending) return;
   const text = input.value.trim();
-  if(!text) return;
-  messagesDiv.innerHTML += `<div class="msg user">${text}</div>`;
+  if (!text) return;
+
+  sending = true;
+  sendBtn.disabled = true;
+  addMsg('user', text, false);
   input.value = '';
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
-  const typing = document.createElement('div');
-  typing.className = 'msg bot'; typing.innerText = 'Typing...'; messagesDiv.appendChild(typing);
+  const typing = addMsg('bot', 'Typing...', false);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 35000); // never stay on "Typing..." forever
+  let reply = '';
+  let ok = false;
+
   try{
-    const res = await fetch('/api/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({message:text}) });
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, history: chatHistory.slice(-12) }),
+      signal: controller.signal
+    });
     const data = await res.json();
-    typing.remove();
-    messagesDiv.innerHTML += `<div class="msg bot">${data.reply || "I'm not sure, chat us on WhatsApp: 08037195305"}</div>`;
-  }catch(e){ typing.remove(); messagesDiv.innerHTML += `<div class="msg bot">Network error. Please chat us on WhatsApp: 08037195305</div>`; }
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    reply = data.reply || FALLBACK_REPLY;
+    ok = !!data.reply && !data.error;
+  }catch(e){
+    reply = NETWORK_ERROR;
+  }finally{
+    clearTimeout(timer);
+  }
+
+  typing.remove();
+  addMsg('bot', reply, true);
+
+  // Only remember successful exchanges
+  if (ok){
+    chatHistory.push({ role: 'user', content: text });
+    chatHistory.push({ role: 'model', content: reply });
+  }
+
+  sending = false;
+  sendBtn.disabled = false;
+  input.focus();
 }
 </script>
 </body>
