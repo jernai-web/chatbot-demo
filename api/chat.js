@@ -1,6 +1,6 @@
 // api/chat.js - Vercel Serverless Function for AB Logistics (Naomi) - FIXED
-// Uses Gemini generateContent with a proper systemInstruction,
-// current model (gemini-3.8-flash) and an automatic fallback model.
+// Uses Gemini generateContent with a proper systemInstruction
+// and automatic fallback between models (free-tier friendly).
 
 const SYSTEM_PROMPT = `
 You are Naomi, AI assistant for AB Logistics, built by Netcom Media Solutions.
@@ -22,11 +22,20 @@ AB Logistics Info:
 Be helpful and warm. You are Naomi.
 `.trim();
 
+// TEMPORARY: set to true to show the real Gemini error inside the chat bubble.
+// Set back to false once the chatbot is working.
+const DEBUG = true;
+
 const FALLBACK_REPLY =
   "Sorry, I'm having trouble connecting. Please continue on WhatsApp: 2348037195305";
 
-// Primary model first, backup second. Each has its own valid config.
+// Models are tried in order. Flash-Lite first because the free tier gives it
+// far more daily requests than gemini-3.8-flash. Change the order once billing is on.
 const MODELS = [
+  {
+    name: 'gemini-3.1-flash-lite',
+    generationConfig: { maxOutputTokens: 1024 },
+  },
   {
     name: 'gemini-3.8-flash',
     generationConfig: { maxOutputTokens: 1024, thinkingConfig: { thinkingLevel: 'low' } },
@@ -73,8 +82,12 @@ function buildContents(history, message) {
   return merged.map(t => ({ role: t.role, parts: [{ text: t.text }] }));
 }
 
-async function callGemini(model, contents, apiKey) {
-  const response = await fetch(
+async function callGemini(model, contents, apiKey, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model.name}:generateContent`,
     {
       method: 'POST',
@@ -87,8 +100,12 @@ async function callGemini(model, contents, apiKey) {
         contents,
         generationConfig: model.generationConfig,
       }),
+      signal: controller.signal,
     }
   );
+  } finally {
+    clearTimeout(timer);
+  }
   const data = await response.json().catch(() => ({}));
   return { ok: response.ok, status: response.status, data };
 }
@@ -123,15 +140,37 @@ export default async function handler(req, res) {
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
     if (!GEMINI_API_KEY) {
       console.error('GEMINI_API_KEY is missing in Vercel environment variables');
-      return res.status(500).json({ error: 'API key not configured', reply: FALLBACK_REPLY });
+      return res.status(200).json({
+        error: 'API key not configured',
+        reply: FALLBACK_REPLY + (DEBUG ? '\n\n[debug] GEMINI_API_KEY is missing on Vercel' : ''),
+      });
     }
 
     const contents = buildContents(history, message);
+    const attempts = [];
+    const startedAt = Date.now();
+    const BUDGET_MS = 9000; // stay under Vercel's 10s function limit
 
     for (const model of MODELS) {
-      const { ok, status, data } = await callGemini(model, contents, GEMINI_API_KEY);
+      const remaining = BUDGET_MS - (Date.now() - startedAt);
+      if (remaining < 1500) {
+        attempts.push(`${model.name}: skipped (out of time)`);
+        break;
+      }
+      let result;
+      try {
+        result = await callGemini(model, contents, GEMINI_API_KEY, Math.min(6000, remaining));
+      } catch (e) {
+        const why = e.name === 'AbortError' ? 'timed out' : `network error - ${e.message}`;
+        attempts.push(`${model.name}: ${why}`);
+        console.error(`Fetch failed on ${model.name}:`, e);
+        continue;
+      }
+      const { ok, status, data } = result;
 
       if (!ok) {
+        const msg = data?.error?.message || JSON.stringify(data).slice(0, 200);
+        attempts.push(`${model.name}: HTTP ${status} - ${msg}`);
         console.error(`Gemini error on ${model.name} (HTTP ${status}):`, JSON.stringify(data));
         continue; // try next model
       }
@@ -139,13 +178,17 @@ export default async function handler(req, res) {
       const reply = extractReply(data);
       if (reply) return res.status(200).json({ reply });
 
+      const why = data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || 'no text';
+      attempts.push(`${model.name}: empty reply (${why})`);
       console.error(`Empty reply from ${model.name}:`, JSON.stringify(data));
     }
 
-    // Both models failed - customer still gets a useful message
-    return res.status(200).json({ reply: FALLBACK_REPLY, error: 'Gemini unavailable' });
+    // All models failed - customer still gets a useful message
+    const debugText = DEBUG ? `\n\n[debug]\n${attempts.join('\n')}` : '';
+    return res.status(200).json({ reply: FALLBACK_REPLY + debugText, error: 'Gemini unavailable' });
   } catch (error) {
     console.error('Server error:', error);
-    return res.status(200).json({ reply: FALLBACK_REPLY, error: 'Server error' });
+    const debugText = DEBUG ? `\n\n[debug] server error: ${error.message}` : '';
+    return res.status(200).json({ reply: FALLBACK_REPLY + debugText, error: 'Server error' });
   }
-} 
+}
